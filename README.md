@@ -8,17 +8,18 @@ A Next.js web application that allows users to upload blood test results and rec
 - **AI Analysis**: Get educational summaries and insights from OpenAI (not medical advice)
 - **Trend Visualization**: View charts showing changes in lab values over time
 - **Dashboard**: Track upload history with quick summaries and sparklines
-- **Responsive Design**: Works on desktop and mobile devices
+- **Responsive Design**: Clean, minimalist Bending Spoons-style UI with emerald accents
 
 ## Tech Stack
 
 - **Framework**: Next.js 15 with App Router
 - **Language**: TypeScript
-- **Styling**: Tailwind CSS
+- **Styling**: Tailwind CSS (custom component library)
 - **Charts**: Recharts
 - **Validation**: Zod
 - **AI**: OpenAI API
 - **Data**: In-memory storage (ready for Supabase migration)
+- **Font**: Inter via Google Fonts
 
 ## Setup Instructions
 
@@ -32,7 +33,7 @@ A Next.js web application that allows users to upload blood test results and rec
 
 1. Clone the repository:
 ```bash
-git clone <repository-url>
+git clone https://github.com/lombazz/health-frame.git
 cd health-frame
 ```
 
@@ -126,6 +127,17 @@ Analyzes lab results using OpenAI and stores the data.
 }
 ```
 
+## UI Components
+
+The app features a custom component library built with pure Tailwind CSS:
+
+- **Container**: Centered layout with consistent max-width
+- **Navbar**: Clean navigation with logo and links
+- **Footer**: Minimalist footer with muted text
+- **Button**: Rounded buttons with primary (emerald) and secondary variants
+- **Card**: Clean cards with rounded corners and soft shadows
+- **StatusChip**: Color-coded status indicators (low=amber, normal=emerald, high=rose)
+
 ## Data Storage
 
 Currently uses in-memory storage for development. To migrate to Supabase:
@@ -151,6 +163,7 @@ Currently uses in-memory storage for development. To migrate to Supabase:
 ```
 health-frame/
 ├── app/
+│   ├── (ui)/components/   # Custom UI component library
 │   ├── api/analyze/       # OpenAI analysis endpoint
 │   ├── dashboard/         # Upload history page
 │   ├── report/[id]/       # Individual report page
@@ -162,7 +175,7 @@ health-frame/
 │   ├── repo.ts            # Data storage layer
 │   ├── utils.ts           # Utility functions
 │   └── validation.ts      # Zod schemas
-└── components/ui/         # shadcn/ui components
+└── tailwind.config.js     # Tailwind configuration
 ```
 
 ### Key TODOs
