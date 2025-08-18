@@ -22,7 +22,7 @@ export default function DashboardPage() {
         const allUploads = uploadRepo.findAll();
         const uploadsWithReports = allUploads.map(upload => {
           const report = reportRepo.findByUploadId(upload.id);
-          return { ...upload, report };
+          return { ...upload, report: report || undefined };
         });
         setUploads(uploadsWithReports);
       } catch (error) {

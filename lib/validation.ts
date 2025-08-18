@@ -19,3 +19,9 @@ export const uploadRequestSchema = z.object({
   demographics: demographicsSchema,
   lab_results: z.array(labEntrySchema).min(1),
 });
+
+// Alternative schema for PDF extraction without demographics
+export const analytesOnlySchema = z.object({
+  analytes: z.array(labEntrySchema).min(1),
+  demographics: demographicsSchema.optional(),
+});

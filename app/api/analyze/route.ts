@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { uploadRequestSchema } from '@/lib/validation';
+import { uploadRequestSchema, analytesOnlySchema } from '@/lib/validation';
 import { openai, MODEL } from '@/lib/openai';
-import { uploadRepo, reportRepo } from '@/lib/repo';
+import { uploadRepo, reportRepo, Demographics } from '@/lib/repo';
 
 const SYSTEM_PROMPT = `You are a health data analysis assistant. You provide educational information about lab results but DO NOT provide medical advice or diagnoses.
 
@@ -42,17 +42,43 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     
-    // Validate input
-    const validatedData = uploadRequestSchema.parse(body);
+    // Try to validate with both schemas
+    let validatedData: { 
+      demographics?: { sex: string; birth_year: number; height_cm: number; weight_kg: number }; 
+      lab_results?: Array<{ analyte: string; value: number; unit: string; ref_low?: number; ref_high?: number }>; 
+      analytes?: Array<{ analyte: string; value: number; unit: string; ref_low?: number; ref_high?: number }> 
+    };
+    let isAnalytesOnly = false;
     
-    // Create upload record
-    const upload = uploadRepo.create(validatedData.demographics, validatedData.lab_results);
+    try {
+      validatedData = uploadRequestSchema.parse(body);
+    } catch {
+      // Try the analytes-only schema
+      validatedData = analytesOnlySchema.parse(body);
+      isAnalytesOnly = true;
+    }
+    
+    // Handle data structure differences
+    const demographics = isAnalytesOnly ? validatedData.demographics : validatedData.demographics;
+    const labResults = isAnalytesOnly ? validatedData.analytes : validatedData.lab_results;
+    
+    // Create upload record (use default demographics if not provided)
+    const defaultDemographics: Demographics = {
+      sex: 'X',
+      birth_year: new Date().getFullYear() - 30,
+      height_cm: 170,
+      weight_kg: 70,
+    };
+    
+    const finalDemographics = (demographics || defaultDemographics) as Demographics;
+    const upload = uploadRepo.create(finalDemographics, labResults || []);
     
     // Prepare data for OpenAI
     const promptData = {
-      demographics: validatedData.demographics,
-      lab_results: validatedData.lab_results,
+      demographics: finalDemographics,
+      lab_results: labResults,
       date: new Date().toISOString().split('T')[0],
+      note: demographics ? undefined : "Demographics not provided - analysis based on lab values only",
     };
     
     // Call OpenAI
@@ -87,7 +113,7 @@ export async function POST(request: NextRequest) {
     
     if (error && typeof error === 'object' && 'name' in error && error.name === 'ZodError') {
       return NextResponse.json(
-        { error: 'Invalid input data', details: (error as any).errors },
+        { error: 'Invalid input data', details: error instanceof Error ? error.message : 'Validation failed' },
         { status: 400 }
       );
     }

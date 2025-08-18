@@ -93,11 +93,39 @@ npm run dev
 
 ## API Endpoints
 
+### POST /api/extract-pdf
+
+Extracts lab results from PDF files using AI.
+
+**Request Body:** 
+- FormData with `file` field containing PDF file (max 10MB)
+
+**Response:**
+```json
+{
+  "success": true,
+  "document_meta": {
+    "lab_name": "Quest Diagnostics",
+    "test_date": "2024-01-15",
+    "patient_name": "John Doe"
+  },
+  "analytes": [
+    {
+      "analyte": "LDL",
+      "value": 130,
+      "unit": "mg/dL",
+      "ref_low": 0,
+      "ref_high": 129
+    }
+  ]
+}
+```
+
 ### POST /api/analyze
 
 Analyzes lab results using OpenAI and stores the data.
 
-**Request Body:**
+**Request Body (with demographics):**
 ```json
 {
   "demographics": {
@@ -107,6 +135,21 @@ Analyzes lab results using OpenAI and stores the data.
     "weight_kg": 70
   },
   "lab_results": [
+    {
+      "analyte": "LDL",
+      "value": 130,
+      "unit": "mg/dL",
+      "ref_low": 0,
+      "ref_high": 129
+    }
+  ]
+}
+```
+
+**Request Body (analytes only - from PDF upload):**
+```json
+{
+  "analytes": [
     {
       "analyte": "LDL",
       "value": 130,
@@ -137,6 +180,8 @@ The app features a custom component library built with pure Tailwind CSS:
 - **Button**: Rounded buttons with primary (emerald) and secondary variants
 - **Card**: Clean cards with rounded corners and soft shadows
 - **StatusChip**: Color-coded status indicators (low=amber, normal=emerald, high=rose)
+- **PdfUpload**: Modern drag-and-drop PDF upload with animations and file validation
+- **ReviewTable**: Editable table for reviewing and correcting extracted lab data
 
 ## Data Storage
 
