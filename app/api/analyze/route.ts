@@ -84,7 +84,6 @@ export async function POST(request: NextRequest) {
     // Call OpenAI
     const completion = await openai.chat.completions.create({
       model: MODEL,
-      temperature: 0.2,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
         { role: 'user', content: `Analyze these lab results: ${JSON.stringify(promptData)}` },

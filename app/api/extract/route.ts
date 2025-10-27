@@ -57,17 +57,39 @@ export async function POST(req: NextRequest) {
     if (file.type !== "application/pdf") return j("not_pdf", 415);
     if (file.size > 10 * 1024 * 1024) return j("file_too_large_>10MB", 413);
 
-    // ---- PDF -> text
+    // ---- PDF -> text via pdf-parse (first attempt)
     const buf = Buffer.from(await file.arrayBuffer());
     const pdfParseMod: any = await import("pdf-parse");
     const pdfParse = pdfParseMod.default || pdfParseMod; // handle CJS/ESM
-    const parsed = await pdfParse(buf);
-    const text: string = (parsed?.text || "").trim();
-    if (!text || text.length < 20) {
+    let parsed = await pdfParse(buf);
+    let text: string = (parsed?.text || "").trim();
+
+    // If text looks too short or noisy, try pdfjs-dist text extraction (second attempt)
+    if (!text || text.length < 200) {
+      try {
+        const pdfjsLib = await import('pdfjs-dist');
+        const loadingTask = pdfjsLib.getDocument({ data: buf });
+        const pdf = await loadingTask.promise;
+        let pagesText: string[] = [];
+        const maxPages = Math.min(pdf.numPages, 5);
+        for (let i = 1; i <= maxPages; i++) {
+          const page = await pdf.getPage(i);
+          const content = await page.getTextContent();
+          const pageText = content.items.map((it: any) => (it.str || '')).join(' ');
+          pagesText.push(pageText);
+        }
+        text = pagesText.join('\n').trim();
+        console.log(`[/api/extract] pdfjs text length=${text.length}`);
+      } catch (e) {
+        console.warn('[/api/extract] pdfjs text extraction failed:', e);
+      }
+    }
+
+    if (!text || text.length < 50) {
       return j("pdf_text_empty_or_too_short", 422);
     }
 
-    // ---- OpenAI call (supports both new Responses API and old Chat API)
+    // ---- OpenAI call (text-only extraction)
     const { OpenAI } = await import("openai");
     const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     const model = process.env.OPENAI_MODEL || "gpt-4o";
@@ -117,7 +139,7 @@ Remove any units, arrows, or symbols from numeric values.`;
 
     let outText: string | undefined;
 
-    // Use the standard OpenAI Chat Completions API
+    // First attempt: text-only messages
     try {
       const response = await client.chat.completions.create({
         model,
@@ -125,7 +147,6 @@ Remove any units, arrows, or symbols from numeric values.`;
           { role: "system", content: system },
           { role: "user", content: text.slice(0, 50000) }
         ],
-        temperature: 0,
         response_format: { type: "json_object" }
       });
       outText = response.choices?.[0]?.message?.content || undefined;
@@ -133,14 +154,65 @@ Remove any units, arrows, or symbols from numeric values.`;
       return j(`openai_api_error: ${apiErr?.message || apiErr}`, 502);
     }
 
-    if (!outText) return j("model_empty_response", 502);
-
+    // Parse JSON response
     let data: any;
-    try {
-      data = JSON.parse(outText);
-    } catch (e) {
-      return j(`json_parse_failed: ${outText?.slice(0, 200)}`, 502);
+    if (outText) {
+      try {
+        data = JSON.parse(outText);
+      } catch (e) {
+        console.warn('[/api/extract] json_parse_failed on text-only, attempting vision fallback');
+      }
     }
+
+    // If analytes empty or missing, try vision fallback: render first pages to PNG and send images
+    if (!data?.analytes || !Array.isArray(data.analytes) || data.analytes.length === 0) {
+      try {
+        const pdfjsLib: any = await import('pdfjs-dist');
+        const { createCanvas } = await import('canvas');
+        const loadingTask = pdfjsLib.getDocument({ data: buf });
+        const pdf = await loadingTask.promise;
+        const maxPages = Math.min(pdf.numPages, 2);
+        const images: string[] = [];
+        for (let i = 1; i <= maxPages; i++) {
+          const page = await pdf.getPage(i);
+          const viewport = page.getViewport({ scale: 2.0 });
+          const canvas = createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
+          const ctx: any = canvas.getContext('2d');
+          await page.render({ canvasContext: ctx, viewport }).promise;
+          const dataUrl = canvas.toDataURL('image/png');
+          images.push(dataUrl);
+        }
+
+        const visionMessages = [
+          { role: 'system', content: system },
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'Extract structured lab results JSON from these report images.' },
+              ...images.map((url) => ({ type: 'image_url', image_url: { url } }))
+            ]
+          }
+        ] as any;
+
+        const visionResp = await client.chat.completions.create({
+          model,
+          messages: visionMessages,
+          response_format: { type: 'json_object' }
+        });
+        const visionText = visionResp.choices?.[0]?.message?.content || undefined;
+        if (visionText) {
+          try {
+            data = JSON.parse(visionText);
+          } catch (e) {
+            console.warn('[/api/extract] vision json_parse_failed');
+          }
+        }
+      } catch (e) {
+        console.warn('[/api/extract] vision fallback failed:', e);
+      }
+    }
+
+    if (!data) return j("model_empty_response", 502);
 
     // Log raw analytes before processing
     console.log("[/api/extract] Raw analytes from LLM:", JSON.stringify(data.analytes, null, 2));
