@@ -130,17 +130,34 @@ export async function POST(req: NextRequest) {
       strict: true
     } as const;
 
-    const system = `You extract lab results from clinical lab reports.
-Return ONLY valid JSON per schema.
-Use ranges when present; else null. No guessing. No prose. 
-CRITICAL: All numeric values must use dot (.) as decimal separator, never comma (,).
-Examples: 17.9, 120.5, 0.85 - NOT 17,9 or 120,5.
-Remove any units, arrows, or symbols from numeric values.`;
+    const system = `You are a medical lab report extraction specialist. Extract structured data from clinical lab reports.
+
+TASK: Extract lab test results into JSON format following the exact schema provided.
+
+EXTRACTION RULES:
+1. Look for common lab tests: LDL, HDL, Triglycerides, Glucose, HbA1c, Hemoglobin, etc.
+2. Extract numeric values ONLY - remove all units, symbols, arrows (↑↓), and text
+3. Use dot (.) as decimal separator, never comma (,) - Examples: 17.9, 120.5, 0.85
+4. Include reference ranges when clearly stated (e.g., "Normal: 70-100")
+5. If no clear numeric value found, skip that analyte entirely
+6. Return ONLY valid JSON matching the schema - no explanations or prose
+
+COMMON PATTERNS TO RECOGNIZE:
+- "Cholesterol, LDL: 120 mg/dL (Normal: <100)" → name: "LDL", value: 120, unit: "mg/dL", ref_high: 100
+- "Glucose (fasting): 95" → name: "Glucose", value: 95
+- "HbA1c: 5.8%" → name: "HbA1c", value: 5.8, unit: "%"
+
+If you cannot find ANY lab values, return empty analytes array: {"document_meta": {"lab_name": null, "collection_date": null}, "analytes": []}`;
 
     let outText: string | undefined;
 
+    // Log extracted text for debugging
+    console.log(`[/api/extract] Extracted text length: ${text.length}`);
+    console.log(`[/api/extract] Text preview (first 500 chars): ${text.slice(0, 500)}`);
+
     // First attempt: text-only messages
     try {
+      console.log(`[/api/extract] Sending text-only request to OpenAI (model: ${model})`);
       const response = await client.chat.completions.create({
         model,
         messages: [
@@ -150,7 +167,10 @@ Remove any units, arrows, or symbols from numeric values.`;
         response_format: { type: "json_object" }
       });
       outText = response.choices?.[0]?.message?.content || undefined;
+      console.log(`[/api/extract] OpenAI text response length: ${outText?.length || 0}`);
+      console.log(`[/api/extract] OpenAI text response preview: ${outText?.slice(0, 200) || 'undefined'}`);
     } catch (apiErr: any) {
+      console.error(`[/api/extract] OpenAI API error: ${apiErr?.message || apiErr}`);
       return j(`openai_api_error: ${apiErr?.message || apiErr}`, 502);
     }
 
@@ -159,56 +179,95 @@ Remove any units, arrows, or symbols from numeric values.`;
     if (outText) {
       try {
         data = JSON.parse(outText);
+        console.log(`[/api/extract] Successfully parsed JSON from text-only response`);
+        console.log(`[/api/extract] Parsed data structure:`, {
+          has_document_meta: !!data?.document_meta,
+          has_analytes: !!data?.analytes,
+          analytes_count: Array.isArray(data?.analytes) ? data.analytes.length : 0,
+          analytes_preview: Array.isArray(data?.analytes) ? data.analytes.slice(0, 2) : null
+        });
       } catch (e) {
-        console.warn('[/api/extract] json_parse_failed on text-only, attempting vision fallback');
+        console.warn('[/api/extract] JSON parse failed on text-only response:', e);
+        console.warn('[/api/extract] Raw response that failed to parse:', outText?.slice(0, 500));
+        console.warn('[/api/extract] Attempting vision fallback');
       }
+    } else {
+      console.warn('[/api/extract] No text response from OpenAI, attempting vision fallback');
     }
 
     // If analytes empty or missing, try vision fallback: render first pages to PNG and send images
     if (!data?.analytes || !Array.isArray(data.analytes) || data.analytes.length === 0) {
+      console.log('[/api/extract] Attempting vision fallback due to empty analytes');
       try {
         const pdfjsLib: any = await import('pdfjs-dist');
         const { createCanvas } = await import('canvas');
-        const loadingTask = pdfjsLib.getDocument({ data: buf });
+        
+        // Configure PDF.js for Node.js environment
+        pdfjsLib.GlobalWorkerOptions.workerSrc = null;
+        
+        const loadingTask = pdfjsLib.getDocument({ 
+          data: buf,
+          useSystemFonts: true,
+          disableFontFace: true
+        });
         const pdf = await loadingTask.promise;
         const maxPages = Math.min(pdf.numPages, 2);
         const images: string[] = [];
+        
+        console.log(`[/api/extract] Processing ${maxPages} pages for vision analysis`);
+        
         for (let i = 1; i <= maxPages; i++) {
           const page = await pdf.getPage(i);
           const viewport = page.getViewport({ scale: 2.0 });
           const canvas = createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
-          const ctx: any = canvas.getContext('2d');
-          await page.render({ canvasContext: ctx, viewport }).promise;
+          const ctx = canvas.getContext('2d');
+          
+          // Create a render context compatible with Node.js canvas
+          const renderContext = {
+            canvasContext: ctx,
+            viewport: viewport,
+            enableWebGL: false
+          };
+          
+          await page.render(renderContext).promise;
           const dataUrl = canvas.toDataURL('image/png');
           images.push(dataUrl);
+          console.log(`[/api/extract] Rendered page ${i} to image (${dataUrl.length} chars)`);
         }
 
-        const visionMessages = [
-          { role: 'system', content: system },
-          {
-            role: 'user',
-            content: [
-              { type: 'text', text: 'Extract structured lab results JSON from these report images.' },
-              ...images.map((url) => ({ type: 'image_url', image_url: { url } }))
-            ]
-          }
-        ] as any;
+        if (images.length > 0) {
+          const visionMessages = [
+            { role: 'system', content: system },
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: 'Extract structured lab results JSON from these medical report images. Look for test names, numeric values, units, and reference ranges.' },
+                ...images.map((url) => ({ type: 'image_url', image_url: { url } }))
+              ]
+            }
+          ] as any;
 
-        const visionResp = await client.chat.completions.create({
-          model,
-          messages: visionMessages,
-          response_format: { type: 'json_object' }
-        });
-        const visionText = visionResp.choices?.[0]?.message?.content || undefined;
-        if (visionText) {
-          try {
-            data = JSON.parse(visionText);
-          } catch (e) {
-            console.warn('[/api/extract] vision json_parse_failed');
+          console.log('[/api/extract] Sending vision request to OpenAI');
+          const visionResp = await client.chat.completions.create({
+            model,
+            messages: visionMessages,
+            response_format: { type: 'json_object' }
+          });
+          const visionText = visionResp.choices?.[0]?.message?.content || undefined;
+          console.log('[/api/extract] Vision response length:', visionText?.length || 0);
+          
+          if (visionText) {
+            try {
+              data = JSON.parse(visionText);
+              console.log('[/api/extract] Vision extraction successful, analytes found:', data?.analytes?.length || 0);
+            } catch (e) {
+              console.warn('[/api/extract] vision json_parse_failed:', e);
+            }
           }
         }
       } catch (e) {
         console.warn('[/api/extract] vision fallback failed:', e);
+        // Continue with text-only processing
       }
     }
 

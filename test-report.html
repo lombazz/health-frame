@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Report Generation</title>
+</head>
+<body>
+    <h1>Test Report Generation</h1>
+    <button onclick="testReportGeneration()">Test Generate Report</button>
+    <div id="result"></div>
+
+    <script>
+        async function testReportGeneration() {
+            const testData = {
+                analytes: [
+                    {
+                        analyte: "LDL",
+                        value: 120,
+                        unit: "mg/dL",
+                        ref_high: 100
+                    },
+                    {
+                        analyte: "HDL",
+                        value: 45,
+                        unit: "mg/dL",
+                        ref_low: 40
+                    },
+                    {
+                        analyte: "Triglycerides",
+                        value: 150,
+                        unit: "mg/dL",
+                        ref_high: 150
+                    },
+                    {
+                        analyte: "Glucose",
+                        value: 95,
+                        unit: "mg/dL",
+                        ref_low: 70,
+                        ref_high: 100
+                    }
+                ]
+            };
+
+            try {
+                console.log('Sending request with data:', testData);
+                
+                const response = await fetch('http://localhost:3000/api/analyze', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(testData),
+                });
+
+                const result = await response.json();
+                console.log('Response:', result);
+                
+                if (response.ok) {
+                    document.getElementById('result').innerHTML = `
+                        <p style="color: green;">Success! Report ID: ${result.report_id}</p>
+                        <a href="http://localhost:3000/report/${result.report_id}" target="_blank">View Report</a>
+                    `;
+                } else {
+                    document.getElementById('result').innerHTML = `
+                        <p style="color: red;">Error: ${result.error}</p>
+                    `;
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                document.getElementById('result').innerHTML = `
+                    <p style="color: red;">Network Error: ${error.message}</p>
+                `;
+            }
+        }
+    </script>
+</body>
+</html>

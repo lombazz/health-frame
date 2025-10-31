@@ -33,7 +33,7 @@
   --color-primary: var(--primary);
   --color-popover-foreground: var(--popover-foreground);
   --color-popover: var(--popover);
-  --color-card-foreground: var(--card-foreground);
+  --card-foreground: var(--card-foreground);
   --color-card: var(--card);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
@@ -129,5 +129,62 @@
   
   a:hover {
     @apply text-emerald-700 underline;
+  }
+}
+
+/* Print styles for better report printing */
+@media print {
+  @page {
+    margin: 0.5in;
+    size: A4;
+  }
+  
+  body {
+    background: white !important;
+    color: black !important;
+    font-size: 12pt;
+    line-height: 1.4;
+  }
+  
+  /* Ensure charts and images print well */
+  svg, canvas, img {
+    max-width: 100% !important;
+    height: auto !important;
+  }
+  
+  /* Adjust colors for print */
+  .bg-emerald-50, .bg-emerald-100 {
+    background-color: #f0f9ff !important;
+  }
+  
+  .text-emerald-600, .text-emerald-700 {
+    color: #059669 !important;
+  }
+  
+  .text-rose-600 {
+    color: #dc2626 !important;
+  }
+  
+  .text-amber-600 {
+    color: #d97706 !important;
+  }
+  
+  /* Ensure borders are visible */
+  .border, .border-slate-200 {
+    border: 1px solid #e2e8f0 !important;
+  }
+  
+  /* Make cards more print-friendly */
+  .rounded-xl, .rounded-2xl {
+    border-radius: 8px !important;
+  }
+  
+  /* Adjust spacing for print */
+  .space-y-6 > * + * {
+    margin-top: 1rem !important;
+  }
+  
+  .space-y-4 > * + * {
+    margin-top: 0.75rem !important;
   }
 }

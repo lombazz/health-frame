@@ -69,35 +69,43 @@ export default function UploadPage() {
     setError('');
 
     try {
+      console.log('Raw reviewData:', reviewData);
+      
       // Convert review data to the format expected by the API
       const validAnalytes = reviewData
-        .filter(item => {
-          const value = String(item.value).trim();
-          return item.name.trim() !== '' && value !== '' && value !== '0';
-        })
+        .filter(item => item.value !== null && item.value !== undefined && item.value !== '')
         .map(item => ({
-          analyte: item.name,
-          value: item.value,
-          unit: item.unit,
-          ref_low: item.ref_low || undefined,
-          ref_high: item.ref_high || undefined,
-        }));
+          analyte: item.name, // Changed from 'name' to 'analyte' to match API schema
+          value: typeof item.value === 'string' ? parseFloat(item.value) : item.value,
+          unit: item.unit || '',
+          ref_low: item.ref_low ? (typeof item.ref_low === 'string' ? parseFloat(item.ref_low) : item.ref_low) : undefined,
+          ref_high: item.ref_high ? (typeof item.ref_high === 'string' ? parseFloat(item.ref_high) : item.ref_high) : undefined,
+        }))
+        .filter(item => !isNaN(item.value)); // Filter out invalid numbers
 
+      console.log('Review data:', reviewData);
+      console.log('Valid analytes:', validAnalytes);
+      
       if (validAnalytes.length === 0) {
         setError('Please ensure at least one analyte has a valid value');
         setLoading(false);
         return;
       }
 
+      const requestBody = {
+        analytes: validAnalytes,
+      };
+      
+      console.log('Request body:', JSON.stringify(requestBody, null, 2));
+
       const response = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          analytes: validAnalytes,
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       const data = await response.json();
+      console.log('API response:', data);
 
       if (!response.ok) {
         throw new Error(data.error || 'Analysis failed');
@@ -106,6 +114,7 @@ export default function UploadPage() {
       // Redirect to report
       router.push(`/report/${data.report_id}`);
     } catch (err) {
+      console.error('Error in generateReportFromExtracted:', err);
       setError(err instanceof Error ? err.message : 'Something went wrong');
     } finally {
       setLoading(false);
