@@ -34,6 +34,20 @@ export default function ReviewTable({ data, onChange, className = '' }: ReviewTa
 
   const saveEdit = () => {
     if (editingIndex !== null && editingData) {
+      // Validate required fields before saving
+      if (!editingData.name || !editingData.name.toString().trim()) {
+        alert('Analyte name is required');
+        return;
+      }
+      if (!editingData.value || editingData.value.toString().trim() === '') {
+        alert('Value is required');
+        return;
+      }
+      if (!editingData.unit || !editingData.unit.toString().trim()) {
+        alert('Unit is required');
+        return;
+      }
+      
       const newData = [...data];
       newData[editingIndex] = editingData;
       onChange(newData);
@@ -55,7 +69,11 @@ export default function ReviewTable({ data, onChange, className = '' }: ReviewTa
       ref_low: '',
       ref_high: '',
     };
-    onChange([...data, newRow]);
+    const newData = [...data, newRow];
+    onChange(newData);
+    // Automatically start editing the new row
+    setEditingIndex(newData.length - 1);
+    setEditingData({ ...newRow });
   };
 
   const updateEditingData = (field: keyof AnalyteRow, value: string | number) => {

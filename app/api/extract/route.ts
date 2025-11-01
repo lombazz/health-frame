@@ -134,8 +134,20 @@ export async function POST(req: NextRequest) {
 
 TASK: Extract lab test results into JSON format following the exact schema provided.
 
+CRITICAL REQUIREMENT: You MUST extract ALL lab analytes found in the document. Do not skip any test results.
+
 EXTRACTION RULES:
-1. Look for common lab tests: LDL, HDL, Triglycerides, Glucose, HbA1c, Hemoglobin, etc.
+1. COMPREHENSIVE EXTRACTION: Look for ALL lab tests including but not limited to:
+   - Blood Count: Leucociti, Eritrociti, Hemoglobin, Hematocrit, MCV, MCH, MCHC, RDW, Piastrine, MPV
+   - Differential: Neutrofili, Linfociti, Monociti, Eosinofili, Basofili (both % and absolute counts)
+   - Coagulation: Tempo di Protrombina, INR, APTT, Fibrinogeno
+   - Chemistry: Glucosio, Colesterolo (Total, HDL, LDL), Trigliceridi, Omocisteina
+   - Enzymes: LDH, Creatinchinasi, GOT, GPT, Gamma GT
+   - Hormones: TSH, FT3, FT4, FSH, LH, Testosterone, Cortisolo, Prolattina, DHEA-S, Androstenedione, ACTH
+   - Antibodies: Anti-Tireoglobulina, Anti-TPO
+   - Glycemic: Emoglobina Glicata (both % and mmol/mol)
+   - Other: Progesterone, 17 Beta Estradiolo
+
 2. Extract numeric values ONLY - remove all units, symbols, arrows (↑↓), and text
 3. Use dot (.) as decimal separator, never comma (,) - Examples: 17.9, 120.5, 0.85
 4. Include reference ranges when clearly stated (e.g., "Normal: 70-100")
@@ -143,56 +155,102 @@ EXTRACTION RULES:
 6. Return ONLY valid JSON matching the schema - no explanations or prose
 
 COMMON PATTERNS TO RECOGNIZE:
+- "Leucociti: 5.73 G/l (4.4-11)" → name: "Leucociti", value: 5.73, unit: "G/l", ref_low: 4.4, ref_high: 11
 - "Cholesterol, LDL: 120 mg/dL (Normal: <100)" → name: "LDL", value: 120, unit: "mg/dL", ref_high: 100
 - "Glucose (fasting): 95" → name: "Glucose", value: 95
 - "HbA1c: 5.8%" → name: "HbA1c", value: 5.8, unit: "%"
 
+QUALITY CHECK: Ensure you extract at least 20+ analytes from a comprehensive lab report. If you find fewer than 10 analytes, re-examine the document more carefully.
+
 If you cannot find ANY lab values, return empty analytes array: {"document_meta": {"lab_name": null, "collection_date": null}, "analytes": []}`;
 
     let outText: string | undefined;
+    let data: any;
 
     // Log extracted text for debugging
     console.log(`[/api/extract] Extracted text length: ${text.length}`);
     console.log(`[/api/extract] Text preview (first 500 chars): ${text.slice(0, 500)}`);
 
-    // First attempt: text-only messages
-    try {
-      console.log(`[/api/extract] Sending text-only request to OpenAI (model: ${model})`);
-      const response = await client.chat.completions.create({
-        model,
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: text.slice(0, 50000) }
-        ],
-        response_format: { type: "json_object" }
-      });
-      outText = response.choices?.[0]?.message?.content || undefined;
-      console.log(`[/api/extract] OpenAI text response length: ${outText?.length || 0}`);
-      console.log(`[/api/extract] OpenAI text response preview: ${outText?.slice(0, 200) || 'undefined'}`);
-    } catch (apiErr: any) {
-      console.error(`[/api/extract] OpenAI API error: ${apiErr?.message || apiErr}`);
-      return j(`openai_api_error: ${apiErr?.message || apiErr}`, 502);
+    // Enhanced extraction with retry logic for consistency
+    const maxRetries = 3;
+    let bestResult: any = null;
+    let bestAnalyteCount = 0;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      console.log(`[/api/extract] Attempt ${attempt}/${maxRetries}: Sending text-only request to OpenAI (model: ${model})`);
+      
+      try {
+        const response = await client.chat.completions.create({
+          model,
+          messages: [
+            { role: "system", content: system },
+            { role: "user", content: text.slice(0, 50000) }
+          ],
+          response_format: { type: "json_object" },
+          // Add temperature for deterministic results
+          temperature: 0.1,
+          // Add seed for more consistent results (if supported)
+          seed: 12345
+        });
+        
+        outText = response.choices?.[0]?.message?.content || undefined;
+        console.log(`[/api/extract] Attempt ${attempt} response length: ${outText?.length || 0}`);
+
+        if (outText) {
+          try {
+            const attemptData = JSON.parse(outText);
+            const analyteCount = Array.isArray(attemptData?.analytes) ? attemptData.analytes.length : 0;
+            
+            console.log(`[/api/extract] Attempt ${attempt} found ${analyteCount} analytes`);
+            
+            // Keep the result with the most analytes
+            if (analyteCount > bestAnalyteCount) {
+              bestResult = attemptData;
+              bestAnalyteCount = analyteCount;
+              console.log(`[/api/extract] New best result: ${analyteCount} analytes`);
+            }
+            
+            // If we found a comprehensive result (20+ analytes), use it
+             if (analyteCount >= 20) {
+               console.log(`[/api/extract] Found comprehensive result with ${analyteCount} analytes, stopping retries`);
+               data = attemptData;
+               data.extraction_method = 'text_only';
+               break;
+             }
+            
+          } catch (e) {
+            console.warn(`[/api/extract] Attempt ${attempt} JSON parse failed:`, e);
+          }
+        }
+        
+        // Add small delay between retries to avoid rate limiting
+        if (attempt < maxRetries) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+        
+      } catch (apiErr: any) {
+        console.error(`[/api/extract] Attempt ${attempt} API error: ${apiErr?.message || apiErr}`);
+        if (attempt === maxRetries) {
+          return j(`openai_api_error: ${apiErr?.message || apiErr}`, 502);
+        }
+      }
     }
 
-    // Parse JSON response
-    let data: any;
-    if (outText) {
-      try {
-        data = JSON.parse(outText);
-        console.log(`[/api/extract] Successfully parsed JSON from text-only response`);
-        console.log(`[/api/extract] Parsed data structure:`, {
-          has_document_meta: !!data?.document_meta,
-          has_analytes: !!data?.analytes,
-          analytes_count: Array.isArray(data?.analytes) ? data.analytes.length : 0,
-          analytes_preview: Array.isArray(data?.analytes) ? data.analytes.slice(0, 2) : null
-        });
-      } catch (e) {
-        console.warn('[/api/extract] JSON parse failed on text-only response:', e);
-        console.warn('[/api/extract] Raw response that failed to parse:', outText?.slice(0, 500));
-        console.warn('[/api/extract] Attempting vision fallback');
-      }
-    } else {
-      console.warn('[/api/extract] No text response from OpenAI, attempting vision fallback');
+    // Use the best result if no comprehensive result was found
+     if (!data && bestResult) {
+       console.log(`[/api/extract] Using best result with ${bestAnalyteCount} analytes`);
+       data = bestResult;
+       data.extraction_method = 'text_only';
+     }
+
+    // Log final extraction results
+    if (data) {
+      console.log(`[/api/extract] Final extraction result:`, {
+        has_document_meta: !!data?.document_meta,
+        has_analytes: !!data?.analytes,
+        analytes_count: Array.isArray(data?.analytes) ? data.analytes.length : 0,
+        analytes_preview: Array.isArray(data?.analytes) ? data.analytes.slice(0, 3).map((a: any) => a.name) : null
+      });
     }
 
     // If analytes empty or missing, try vision fallback: render first pages to PNG and send images
@@ -251,15 +309,25 @@ If you cannot find ANY lab values, return empty analytes array: {"document_meta"
           const visionResp = await client.chat.completions.create({
             model,
             messages: visionMessages,
-            response_format: { type: 'json_object' }
+            response_format: { type: 'json_object' },
+            temperature: 0.1,
+            seed: 12345
           });
           const visionText = visionResp.choices?.[0]?.message?.content || undefined;
           console.log('[/api/extract] Vision response length:', visionText?.length || 0);
           
           if (visionText) {
             try {
-              data = JSON.parse(visionText);
-              console.log('[/api/extract] Vision extraction successful, analytes found:', data?.analytes?.length || 0);
+              const visionData = JSON.parse(visionText);
+              const visionAnalyteCount = Array.isArray(visionData?.analytes) ? visionData.analytes.length : 0;
+              console.log('[/api/extract] Vision extraction successful, analytes found:', visionAnalyteCount);
+              
+              // Use vision result if it's better than text result
+               if (visionAnalyteCount > bestAnalyteCount) {
+                 console.log('[/api/extract] Vision result is better, using it');
+                 data = visionData;
+                 data.extraction_method = 'vision_fallback';
+               }
             } catch (e) {
               console.warn('[/api/extract] vision json_parse_failed:', e);
             }
@@ -306,7 +374,31 @@ If you cannot find ANY lab values, return empty analytes array: {"document_meta"
       .filter((a: any) => a.name && Number.isFinite(a.value));
 
     console.log("[/api/extract] Final processed analytes:", JSON.stringify(processedAnalytes, null, 2));
+    
+    // Validation and quality checks
+    const finalAnalyteCount = processedAnalytes.length;
+    console.log(`[/api/extract] EXTRACTION SUMMARY: Found ${finalAnalyteCount} valid analytes`);
+    
+    // Log warning if extraction seems incomplete
+    if (finalAnalyteCount < 10) {
+      console.warn(`[/api/extract] WARNING: Only ${finalAnalyteCount} analytes extracted. This may indicate incomplete extraction.`);
+      console.warn(`[/api/extract] Text length: ${text.length}, Expected comprehensive lab report to have 20+ analytes`);
+    } else if (finalAnalyteCount >= 20) {
+      console.log(`[/api/extract] SUCCESS: Comprehensive extraction with ${finalAnalyteCount} analytes`);
+    } else {
+      console.log(`[/api/extract] PARTIAL: Moderate extraction with ${finalAnalyteCount} analytes`);
+    }
+    
+    // Add extraction metadata for monitoring
+    const extractionMeta = {
+      extraction_quality: finalAnalyteCount >= 20 ? 'comprehensive' : finalAnalyteCount >= 10 ? 'moderate' : 'limited',
+      analyte_count: finalAnalyteCount,
+      text_length: text.length,
+      extraction_method: data.extraction_method || 'text_only'
+    };
+    
     data.analytes = processedAnalytes;
+    data.extraction_meta = extractionMeta;
 
     return NextResponse.json(data);
   } catch (err: any) {

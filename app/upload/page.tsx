@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 import Container from '../(ui)/components/Container';
@@ -8,6 +8,7 @@ import Button from '../(ui)/components/Button';
 import Card from '../(ui)/components/Card';
 import PdfUpload from '../(ui)/components/PdfUpload';
 import ReviewTable from '../(ui)/components/ReviewTable';
+import ErrorBoundary from '../(ui)/components/ErrorBoundary';
 
 interface ExtractedAnalyte {
   name: string;
@@ -26,11 +27,17 @@ interface ExtractionResult {
   analytes: ExtractedAnalyte[];
 }
 
-export default function UploadPage() {
+function UploadPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [showManualEntry, setShowManualEntry] = useState(false);
+  const [mounted, setMounted] = useState(false);
+
+  // Handle client-side mounting to prevent hydration issues
+  useEffect(() => {
+    setMounted(true);
+  }, []);
   
   // PDF extraction state
   const [extractedData, setExtractedData] = useState<ExtractionResult | null>(null);
@@ -73,49 +80,143 @@ export default function UploadPage() {
       
       // Convert review data to the format expected by the API
       const validAnalytes = reviewData
-        .filter(item => item.value !== null && item.value !== undefined && item.value !== '')
-        .map(item => ({
-          analyte: item.name, // Changed from 'name' to 'analyte' to match API schema
-          value: typeof item.value === 'string' ? parseFloat(item.value) : item.value,
-          unit: item.unit || '',
-          ref_low: item.ref_low ? (typeof item.ref_low === 'string' ? parseFloat(item.ref_low) : item.ref_low) : undefined,
-          ref_high: item.ref_high ? (typeof item.ref_high === 'string' ? parseFloat(item.ref_high) : item.ref_high) : undefined,
-        }))
-        .filter(item => !isNaN(item.value)); // Filter out invalid numbers
+        .filter(item => {
+          // More thorough validation of input data
+          const hasValue = item.value !== null && item.value !== undefined && item.value !== '';
+          const hasName = item.name && typeof item.name === 'string' && item.name.trim().length > 0;
+          const hasUnit = item.unit && typeof item.unit === 'string' && item.unit.trim().length > 0;
+          return hasValue && hasName && hasUnit;
+        })
+        .map(item => {
+          // Parse and validate numeric values
+          const parsedValue = typeof item.value === 'string' ? parseFloat(item.value) : item.value;
+          const parsedRefLow = item.ref_low ? (typeof item.ref_low === 'string' ? parseFloat(item.ref_low) : item.ref_low) : undefined;
+          const parsedRefHigh = item.ref_high ? (typeof item.ref_high === 'string' ? parseFloat(item.ref_high) : item.ref_high) : undefined;
+          
+          // Sanitize strings to prevent JSON issues
+          const sanitizeString = (str: string) => {
+            if (typeof str !== 'string') return str;
+            // Remove control characters and ensure valid UTF-8
+            return str.replace(/[\x00-\x1F\x7F-\x9F]/g, '').trim();
+          };
+          
+          return {
+            analyte: sanitizeString(item.name), // Ensure analyte name is clean
+            value: parsedValue,
+            unit: sanitizeString(item.unit), // Only include items with valid units
+            ref_low: parsedRefLow,
+            ref_high: parsedRefHigh,
+          };
+        })
+        .filter(item => {
+          // Final validation: ensure value is a valid number, analyte name exists, and unit is not empty
+          return !isNaN(item.value) && item.analyte.length > 0 && item.unit.length > 0;
+        });
 
       console.log('Review data:', reviewData);
       console.log('Valid analytes:', validAnalytes);
       
       if (validAnalytes.length === 0) {
-        setError('Please ensure at least one analyte has a valid value');
+        const totalAnalytes = reviewData.length;
+        const analytesWithoutUnits = reviewData.filter(item => !item.unit || item.unit.trim().length === 0).length;
+        
+        let errorMessage = 'No valid analytes found for report generation. ';
+        if (analytesWithoutUnits > 0) {
+          errorMessage += `${analytesWithoutUnits} of ${totalAnalytes} analytes are missing units. `;
+        }
+        errorMessage += 'Please ensure all analytes have a valid name, numeric value, and unit.';
+        
+        setError(errorMessage);
         setLoading(false);
         return;
+      }
+      
+      // Warn user if some analytes were filtered out
+      const filteredCount = reviewData.length - validAnalytes.length;
+      if (filteredCount > 0) {
+        console.warn(`${filteredCount} analytes were excluded due to missing or invalid data`);
       }
 
       const requestBody = {
         analytes: validAnalytes,
       };
       
-      console.log('Request body:', JSON.stringify(requestBody, null, 2));
+      // Validate that the request body can be properly serialized to JSON
+      let jsonString: string;
+      try {
+        jsonString = JSON.stringify(requestBody);
+        console.log('Request body JSON:', jsonString);
+        
+        // Validate that the JSON can be parsed back (double-check)
+        JSON.parse(jsonString);
+      } catch (jsonError) {
+        console.error('JSON serialization error:', jsonError);
+        setError('Invalid data format. Please check that all values are properly entered.');
+        setLoading(false);
+        return;
+      }
 
       const response = await fetch('/api/analyze', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody),
+        headers: { 
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        body: jsonString,
       });
 
-      const data = await response.json();
-      console.log('API response:', data);
+      // Check if response is actually JSON before trying to parse it
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        console.error('Server returned non-JSON response:', contentType);
+        throw new Error('Server returned invalid response format');
+      }
+
+      let data: any;
+      try {
+        data = await response.json();
+        console.log('API response:', data);
+      } catch (parseError) {
+        console.error('Failed to parse server response as JSON:', parseError);
+        throw new Error('Server returned invalid JSON response');
+      }
 
       if (!response.ok) {
-        throw new Error(data.error || 'Analysis failed');
+        // Provide more specific error messages based on the response
+        let errorMessage = 'Analysis failed';
+        if (data.error) {
+          errorMessage = data.error;
+          if (data.details) {
+            console.error('Validation details:', data.details);
+            errorMessage += '. Please check that all lab values are properly formatted.';
+          }
+        }
+        throw new Error(errorMessage);
       }
 
       // Redirect to report
       router.push(`/report/${data.report_id}`);
     } catch (err) {
       console.error('Error in generateReportFromExtracted:', err);
-      setError(err instanceof Error ? err.message : 'Something went wrong');
+      
+      // Provide more user-friendly error messages
+      let userMessage = 'Something went wrong';
+      if (err instanceof Error) {
+        if (err.message.includes('Invalid input data')) {
+          userMessage = 'The lab data format is invalid. Please check that all analytes have valid names, values, and units.';
+        } else if (err.message.includes('String must contain at least 1 character')) {
+          userMessage = 'Some analytes are missing required information (name, value, or unit). Please complete all fields before generating the report.';
+        } else if (err.message.includes('Invalid JSON format')) {
+          userMessage = 'Data formatting error. Please check that all values contain only valid characters.';
+        } else if (err.message.includes('fetch') || err.message.includes('Network')) {
+          userMessage = 'Network error. Please check your connection and try again.';
+        } else if (err.message.includes('Server returned')) {
+          userMessage = 'Server error. Please try again in a moment.';
+        } else {
+          userMessage = err.message;
+        }
+      }
+      setError(userMessage);
     } finally {
       setLoading(false);
     }
@@ -174,11 +275,27 @@ export default function UploadPage() {
     setLabResults(updated);
   };
 
+  // Prevent hydration issues by showing loading state until mounted
+  if (!mounted) {
+    return (
+      <Container className="py-8">
+        <div className="text-center">
+          <div className="animate-pulse space-y-4">
+            <div className="h-8 bg-slate-200 rounded w-64 mx-auto"></div>
+            <div className="h-4 bg-slate-200 rounded w-96 mx-auto"></div>
+          </div>
+        </div>
+      </Container>
+    );
+  }
+
   return (
     <Container className="py-8 space-y-8">
-      <div className="text-center space-y-2">
-        <h1 className="text-2xl md:text-3xl text-slate-900">Upload Lab Results</h1>
-        <p className="text-slate-600">Upload your PDF blood test report or enter data manually</p>
+      <div className="text-center space-y-4">
+        <h1 className="text-3xl font-bold text-slate-900">Upload Lab Results</h1>
+        <p className="text-slate-600 max-w-2xl mx-auto">
+          Upload your blood test PDF or enter your lab values manually to get personalized health insights
+        </p>
       </div>
       
       {/* PDF Upload Section */}
@@ -392,3 +509,14 @@ export default function UploadPage() {
     </Container>
   );
 }
+
+// Wrap the component with ErrorBoundary
+function UploadPageWithErrorBoundary() {
+  return (
+    <ErrorBoundary>
+      <UploadPage />
+    </ErrorBoundary>
+  );
+}
+
+export { UploadPageWithErrorBoundary as default };

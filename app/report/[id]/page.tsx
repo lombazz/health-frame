@@ -18,7 +18,7 @@ import {
   Legend
 } from 'recharts';
 import { Download, Share2, TrendingUp, TrendingDown, AlertTriangle, CheckCircle, Printer } from 'lucide-react';
-import { reportRepo, type Report } from '@/lib/repo';
+import { type Report } from '@/lib/repo-types';
 import Container from '../../(ui)/components/Container';
 import Card from '../../(ui)/components/Card';
 import StatusChip from '../../(ui)/components/StatusChip';
@@ -31,15 +31,30 @@ export default function ReportPage() {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    const loadReport = () => {
+    const loadReport = async () => {
       try {
-        const foundReport = reportRepo.findById(params.id as string);
-        if (!foundReport) {
-          setError('Report not found');
-        } else {
-          setReport(foundReport);
+        console.log(`[ReportPage] Loading report with ID: ${params.id}`);
+        
+        // Fetch report from API instead of client-side repository
+        const response = await fetch(`/api/report/${params.id}`);
+        
+        if (!response.ok) {
+          if (response.status === 404) {
+            console.error(`[ReportPage] Report not found: ${params.id}`);
+            setError(`Report not found. ID: ${params.id}`);
+          } else {
+            console.error(`[ReportPage] API error: ${response.status}`);
+            setError('Failed to load report');
+          }
+          return;
         }
-      } catch {
+
+        const foundReport = await response.json();
+        console.log(`[ReportPage] Successfully loaded report: ${params.id}`);
+        setReport(foundReport);
+        
+      } catch (err) {
+        console.error('[ReportPage] Error loading report:', err);
         setError('Failed to load report');
       } finally {
         setLoading(false);

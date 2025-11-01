@@ -1,105 +1,76 @@
-// TODO: Replace with Supabase later
+// Client-side repository (fallback to in-memory for client-side usage)
+// Server-side operations should use repo-server.ts
 
-export interface Demographics {
-  sex: 'M' | 'F' | 'X';
-  birth_year: number;
-  height_cm: number;
-  weight_kg: number;
-}
+// Re-export types
+export * from './repo-types';
 
-export interface LabEntry {
-  analyte: string;
-  value: number;
-  unit: string;
-  ref_low?: number;
-  ref_high?: number;
-}
-
-export interface Upload {
-  id: string;
-  created_at: string;
-  demographics: Demographics;
-  raw_entries: LabEntry[];
-}
-
-export interface AnalyteResult {
-  name: string;
-  value: number;
-  unit: string;
-  ref_low?: number;
-  ref_high?: number;
-  status: 'low' | 'normal' | 'high' | 'unknown';
-  note: string;
-}
-
-export interface ChartPoint {
-  t: string;
-  v: number;
-}
-
-export interface ChartSeries {
-  key: string;
-  points: ChartPoint[];
-}
-
-export interface Report {
-  id: string;
-  upload_id: string;
-  result_json: {
-    overall_summary: string;
-    overall_score: number;
-    flags: string[];
-    analytes: AnalyteResult[];
-    chart_series: ChartSeries[];
-    disclaimers: string[];
-  };
-}
-
-// In-memory storage (replace with Supabase later)
-const uploads: Upload[] = [];
-const reports: Report[] = [];
+// In-memory storage for client-side fallback
+let uploads: any[] = [];
+let reports: any[] = [];
 
 function generateId(): string {
   return Math.random().toString(36).substr(2, 9);
 }
 
 export const uploadRepo = {
-  create: (demographics: Demographics, raw_entries: LabEntry[]): Upload => {
-    const upload: Upload = {
+  create: (demographics: any, raw_entries: any[]): any => {
+    const upload = {
       id: generateId(),
       created_at: new Date().toISOString(),
       demographics,
       raw_entries,
     };
     uploads.push(upload);
+    console.log(`[uploadRepo-client] Created upload with ID: ${upload.id} (in-memory only)`);
     return upload;
   },
 
-  findAll: (): Upload[] => {
+  findAll: (): any[] => {
     return uploads.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   },
 
-  findById: (id: string): Upload | null => {
-    return uploads.find(u => u.id === id) || null;
+  findById: (id: string): any | null => {
+    const upload = uploads.find(u => u.id === id) || null;
+    console.log(`[uploadRepo-client] Finding upload ${id}: ${upload ? 'found' : 'not found'} (in-memory only)`);
+    return upload;
   },
 };
 
 export const reportRepo = {
-  create: (upload_id: string, result_json: Report['result_json']): Report => {
-    const report: Report = {
+  create: (upload_id: string, result_json: any): any => {
+    const report = {
       id: generateId(),
       upload_id,
       result_json,
     };
     reports.push(report);
+    console.log(`[reportRepo-client] Created report with ID: ${report.id} for upload: ${upload_id} (in-memory only)`);
     return report;
   },
 
-  findById: (id: string): Report | null => {
-    return reports.find(r => r.id === id) || null;
+  findById: (id: string): any | null => {
+    const report = reports.find(r => r.id === id) || null;
+    console.log(`[reportRepo-client] Finding report ${id}: ${report ? 'found' : 'not found'} (in-memory only)`);
+    if (!report) {
+      console.log(`[reportRepo-client] Available report IDs: ${reports.map(r => r.id).join(', ')}`);
+    }
+    return report;
   },
 
-  findByUploadId: (upload_id: string): Report | null => {
-    return reports.find(r => r.upload_id === upload_id) || null;
+  findByUploadId: (upload_id: string): any | null => {
+    const report = reports.find(r => r.upload_id === upload_id) || null;
+    console.log(`[reportRepo-client] Finding report by upload ${upload_id}: ${report ? 'found' : 'not found'} (in-memory only)`);
+    return report;
+  },
+
+  // Add utility methods for debugging
+  getAllReports: (): any[] => {
+    console.log(`[reportRepo-client] Total reports in storage: ${reports.length} (in-memory only)`);
+    return reports;
+  },
+
+  clearAll: (): void => {
+    reports.length = 0;
+    console.log('[reportRepo-client] Cleared all reports (in-memory only)');
   },
 };

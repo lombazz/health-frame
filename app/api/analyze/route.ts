@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { uploadRequestSchema, analytesOnlySchema } from '@/lib/validation';
 import { openai, MODEL } from '@/lib/openai';
-import { uploadRepo, reportRepo, Demographics } from '@/lib/repo';
+import { uploadRepo, reportRepo } from '@/lib/repo-server';
+import { Demographics } from '@/lib/repo-types';
 
 const SYSTEM_PROMPT = `You are a health data analysis assistant. You provide educational information about lab results but DO NOT provide medical advice or diagnoses.
 
@@ -39,8 +40,31 @@ Return a JSON response with this exact structure:
 }`;
 
 export async function POST(request: NextRequest) {
+  let body: any;
+  let rawBody: string = '';
+  
   try {
-    const body = await request.json();
+    // First, try to get the raw body text for debugging
+    try {
+      const requestClone = request.clone();
+      rawBody = await requestClone.text();
+      console.log('Raw request body (first 500 chars):', rawBody.substring(0, 500));
+      console.log('Raw body length:', rawBody.length);
+      console.log('Content-Type header:', request.headers.get('content-type'));
+    } catch (rawError) {
+      console.error('Failed to read raw request body:', rawError);
+    }
+
+    // Now try to parse as JSON
+    try {
+      body = await request.json();
+    } catch (jsonParseError) {
+      console.error('JSON parsing failed:', jsonParseError);
+      console.error('Raw body that failed to parse:', rawBody);
+      throw jsonParseError; // Re-throw to be handled by the outer catch
+    }
+    
+    console.log('Received request body:', JSON.stringify(body, null, 2));
     
     // Try to validate with both schemas
     let validatedData: { 
@@ -51,11 +75,20 @@ export async function POST(request: NextRequest) {
     let isAnalytesOnly = false;
     
     try {
+      console.log('Trying uploadRequestSchema validation...');
       validatedData = uploadRequestSchema.parse(body);
-    } catch {
-      // Try the analytes-only schema
-      validatedData = analytesOnlySchema.parse(body);
-      isAnalytesOnly = true;
+      console.log('uploadRequestSchema validation successful');
+    } catch (uploadError) {
+      console.log('uploadRequestSchema validation failed, trying analytesOnlySchema...', uploadError);
+      try {
+        // Try the analytes-only schema
+        validatedData = analytesOnlySchema.parse(body);
+        isAnalytesOnly = true;
+        console.log('analytesOnlySchema validation successful');
+      } catch (analytesError) {
+        console.error('Both validation schemas failed:', { uploadError, analytesError });
+        throw analytesError; // Throw the analytes error since that's what we expect
+      }
     }
     
     // Handle data structure differences
@@ -95,8 +128,39 @@ export async function POST(request: NextRequest) {
       throw new Error('No response from OpenAI');
     }
     
-    // Parse JSON response
-    const result = JSON.parse(resultText);
+    console.log('Raw OpenAI response:', resultText);
+    
+    // Parse JSON response - handle potential markdown formatting
+    let result: any;
+    try {
+      // First, try to extract JSON from markdown code blocks if present
+      let jsonText = resultText.trim();
+      
+      // Remove markdown code block formatting if present
+      if (jsonText.startsWith('```json')) {
+        const startIndex = jsonText.indexOf('{');
+        const endIndex = jsonText.lastIndexOf('}');
+        if (startIndex !== -1 && endIndex !== -1) {
+          jsonText = jsonText.substring(startIndex, endIndex + 1);
+        }
+      } else if (jsonText.startsWith('```')) {
+        // Handle generic code blocks
+        const lines = jsonText.split('\n');
+        lines.shift(); // Remove first ```
+        if (lines[lines.length - 1].trim() === '```') {
+          lines.pop(); // Remove last ```
+        }
+        jsonText = lines.join('\n').trim();
+      }
+      
+      console.log('Cleaned JSON text:', jsonText);
+      result = JSON.parse(jsonText);
+      
+    } catch (parseError) {
+      console.error('Failed to parse OpenAI response as JSON:', parseError);
+      console.error('Original response text:', resultText);
+      throw new Error(`Invalid JSON response from AI service: ${parseError instanceof Error ? parseError.message : 'Unknown parsing error'}`);
+    }
     
     // Create report
     const report = reportRepo.create(upload.id, result);
@@ -111,9 +175,44 @@ export async function POST(request: NextRequest) {
     console.error('Analysis error:', error);
     
     if (error && typeof error === 'object' && 'name' in error && error.name === 'ZodError') {
+      console.error('Validation error details:', error);
       return NextResponse.json(
-        { error: 'Invalid input data', details: error instanceof Error ? error.message : 'Validation failed' },
+        { 
+          error: 'Invalid input data', 
+          details: error instanceof Error ? error.message : 'Validation failed',
+          received_data: body // Include the received data for debugging
+        },
         { status: 400 }
+      );
+    }
+    
+    // Handle JSON parsing errors
+    if (error instanceof SyntaxError) {
+      console.error('JSON parsing error details:', {
+        message: error.message,
+        rawBodyLength: rawBody.length,
+        rawBodyPreview: rawBody.substring(0, 200),
+        contentType: request.headers.get('content-type')
+      });
+      
+      return NextResponse.json(
+        { 
+          error: 'Invalid JSON format in request',
+          details: 'The request body could not be parsed as valid JSON',
+          debug: process.env.NODE_ENV === 'development' ? {
+            syntaxError: error.message,
+            bodyPreview: rawBody.substring(0, 100)
+          } : undefined
+        },
+        { status: 400 }
+      );
+    }
+    
+    // Handle OpenAI API errors
+    if (error && typeof error === 'object' && 'status' in error) {
+      return NextResponse.json(
+        { error: 'AI analysis service temporarily unavailable. Please try again.' },
+        { status: 503 }
       );
     }
     
