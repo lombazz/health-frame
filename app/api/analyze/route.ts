@@ -6,13 +6,21 @@ import { Demographics } from '@/lib/repo-types';
 
 const SYSTEM_PROMPT = `You are a health data analysis assistant. You provide educational information about lab results but DO NOT provide medical advice or diagnoses.
 
-IMPORTANT GUIDELINES:
+CRITICAL REQUIREMENTS:
+- You MUST analyze ALL analytes provided in the input data
+- You MUST assign a status to EVERY SINGLE analyte (never skip any)
+- For each analyte, determine status based on reference ranges:
+  * If value < ref_low: status = "low"
+  * If value > ref_high: status = "high" 
+  * If ref_low <= value <= ref_high: status = "normal"
+  * If no reference ranges provided: status = "unknown"
+- The number of analytes in your response MUST equal the number in the input
 - Always emphasize this is for educational purposes only
 - Never diagnose conditions or recommend treatments
-- Use provided reference ranges when available
-- If no reference ranges provided, mark status as "unknown"
 - Be conservative and non-alarmist
 - Always include disclaimers about consulting healthcare professionals
+
+VALIDATION CHECK: Before responding, count the input analytes and ensure your response contains the exact same number.
 
 Return a JSON response with this exact structure:
 {
@@ -160,6 +168,65 @@ export async function POST(request: NextRequest) {
       console.error('Failed to parse OpenAI response as JSON:', parseError);
       console.error('Original response text:', resultText);
       throw new Error(`Invalid JSON response from AI service: ${parseError instanceof Error ? parseError.message : 'Unknown parsing error'}`);
+    }
+
+    // POST-PROCESSING: Ensure all analytes have proper status assignments
+    if (result.analytes && Array.isArray(result.analytes)) {
+      console.log(`Post-processing ${result.analytes.length} analytes from OpenAI response`);
+      console.log(`Original lab results count: ${labResults?.length || 0}`);
+      
+      // Function to calculate status based on reference ranges
+      const calculateStatus = (value: number, refLow?: number, refHigh?: number): string => {
+        if (typeof value !== 'number' || isNaN(value)) return 'unknown';
+        
+        if (refLow !== null && refLow !== undefined && value < refLow) return 'low';
+        if (refHigh !== null && refHigh !== undefined && value > refHigh) return 'high';
+        if ((refLow !== null && refLow !== undefined) || (refHigh !== null && refHigh !== undefined)) return 'normal';
+        
+        return 'unknown';
+      };
+
+      // Ensure all analytes have proper status
+      result.analytes = result.analytes.map((analyte: any) => {
+        if (!analyte.status || !['low', 'normal', 'high', 'unknown'].includes(analyte.status)) {
+          const calculatedStatus = calculateStatus(analyte.value, analyte.ref_low, analyte.ref_high);
+          console.log(`Fixed status for ${analyte.name}: ${analyte.status} -> ${calculatedStatus}`);
+          analyte.status = calculatedStatus;
+        }
+        return analyte;
+      });
+
+      // Verify we have all analytes from the original input
+      if (labResults && result.analytes.length !== labResults.length) {
+        console.warn(`Analyte count mismatch: Input=${labResults.length}, Output=${result.analytes.length}`);
+        
+        // If OpenAI missed some analytes, add them with calculated status
+        const processedNames = new Set(result.analytes.map((a: any) => a.name?.toLowerCase()));
+        const missingAnalytes = labResults.filter((lab: any) => 
+          !processedNames.has(lab.analyte?.toLowerCase())
+        );
+
+        for (const missing of missingAnalytes) {
+          const status = calculateStatus(missing.value, missing.ref_low, missing.ref_high);
+          result.analytes.push({
+            name: missing.analyte,
+            value: missing.value,
+            unit: missing.unit || null,
+            ref_low: missing.ref_low || null,
+            ref_high: missing.ref_high || null,
+            status: status,
+            note: "Educational information - consult your healthcare provider for interpretation"
+          });
+          console.log(`Added missing analyte: ${missing.analyte} with status: ${status}`);
+        }
+      }
+
+      console.log(`Final analyte count: ${result.analytes.length}`);
+      const statusCounts = result.analytes.reduce((acc: any, a: any) => {
+        acc[a.status] = (acc[a.status] || 0) + 1;
+        return acc;
+      }, {});
+      console.log('Status distribution:', statusCounts);
     }
     
     // Create report
